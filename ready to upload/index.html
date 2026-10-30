@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Siaga Bencana! – Game Evakuasi Gempa & Tsunami | Stamet Yogyakarta</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0b2545; font-family: "Segoe UI", Arial, sans-serif; color: #fff;
+         display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+  header { padding: 10px; text-align: center; }
+  header h1 { font-size: 1.3rem; color: #ffd166; }
+  header p { font-size: .85rem; opacity: .8; }
+  #wrap { position: relative; width: 100%; max-width: 960px; }
+  canvas { width: 100%; display: block; border-radius: 10px; background: #8ecae6; touch-action: none; }
+  #touch { display: flex; justify-content: space-between; width: 100%; max-width: 960px; padding: 10px; gap: 8px; }
+  #touch .grp { display: flex; gap: 8px; }
+  #touch button { width: 70px; height: 60px; font-size: 1.1rem; border: none; border-radius: 12px;
+                  background: #13315c; color: #fff; font-weight: bold; user-select: none; }
+  #touch button:active { background: #1d4e89; }
+  footer { font-size: .75rem; opacity: .6; padding: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌏 Siaga Bencana! Evakuasi Gempa & Tsunami</h1>
+  <p>Game edukasi kebencanaan – BMKG Stasiun Meteorologi Yogyakarta</p>
+</header>
+<div id="wrap"><canvas id="c" width="960" height="540"></canvas></div>
+<div id="touch">
+  <div class="grp">
+    <button data-k="ArrowLeft">◀</button>
+    <button data-k="ArrowRight">▶</button>
+  </div>
+  <div class="grp">
+    <button data-k="ArrowDown">⬇<br><small>Lindung</small></button>
+    <button data-k="ArrowUp">⬆<br><small>Lompat</small></button>
+    <button data-k="Enter">OK</button>
+  </div>
+</div>
+<footer>Kontrol: ← → bergerak • ↓ berlindung • ↑ / Spasi lompat • Enter mulai</footer>
+
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = 960, H = 540;
+
+// ---------- INPUT ----------
+const keys = {};
+let pressed = {};
+addEventListener('keydown', e => {
+  let k = e.key === ' ' ? 'ArrowUp' : e.key;
+  if (!keys[k]) pressed[k] = true;
+  keys[k] = true;
+  if (k.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.key === ' ' ? 'ArrowUp' : e.key] = false; });
+document.querySelectorAll('#touch button').forEach(b => {
+  const k = b.dataset.k;
+  const down = e => { e.preventDefault(); if (!keys[k]) pressed[k] = true; keys[k] = true; };
+  const up = e => { e.preventDefault(); keys[k] = false; };
+  b.addEventListener('touchstart', down); b.addEventListener('touchend', up);
+  b.addEventListener('mousedown', down); b.addEventListener('mouseup', up); b.addEventListener('mouseleave', up);
+});
+cv.addEventListener('click', () => pressed['Enter'] = true);
+
+// ---------- DATA EDUKASI ----------
+const TIPS = [
+  'Siapkan Tas Siaga: air, makanan, senter, P3K, dokumen penting.',
+  'Saat gempa: MERUNDUK, BERLINDUNG, BERPEGANGAN (Drop, Cover, Hold On).',
+  'Jauhi jendela, lemari, dan benda yang bisa jatuh saat gempa.',
+  'Gempa kuat di dekat pantai? Segera ke tempat tinggi tanpa menunggu sirine!',
+  'Air laut surut tiba-tiba adalah tanda alami tsunami.',
+  'Ikuti rambu jalur evakuasi menuju Titik Kumpul.',
+  'Pantau info resmi gempa & tsunami dari aplikasi InfoBMKG.',
+  'Jangan gunakan lift saat gempa, gunakan tangga.',
+  'Tunggu sampai ada pengumuman resmi BMKG sebelum kembali ke pantai.'
+];
+const ITEMS = [
+  { n: 'Air Minum', c: '#4cc9f0' }, { n: 'Senter', c: '#ffd166' },
+  { n: 'Kotak P3K', c: '#ef476f' }, { n: 'Radio', c: '#8d99ae' }, { n: 'Dokumen', c: '#f4a261' }
+];
+
+// ---------- STATE ----------
+let state = 'menu', score = 0, lives = 3, t = 0, msg = '', msgT = 0, flash = 0, endReason = '';
+let Q, R; // data stage gempa & tsunami
+
+function showMsg(s, dur = 180) { msg = s; msgT = dur; }
+
+function startQuake() {
+  state = 'quake'; score = 0; lives = 3;
+  Q = { px: 80, py: 440, hide: false, phase: 'calm', timer: 120 + Math.random() * 120,
+        objs: [], tables: [220, 480, 740], spawn: 0, shake: 0 };
+  showMsg('Pelajaran berlangsung... tetap waspada!', 150);
+}
+
+function startTsunami() {
+  state = 'tsunami';
+  R = { y: 0, vy: 0, dist: 0, goal: 5000, speed: 6, wave: -260, obs: [], items: [],
+        nextObs: 400, nextItem: 700, inv: 0, collected: 0 };
+  showMsg('PERINGATAN DINI TSUNAMI! Lari ke tempat tinggi! (↑ untuk lompat)', 200);
+}
+
+function rectHit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+function hurt(text) {
+  lives--; flash = 20; showMsg(text, 120);
+  if (lives <= 0) { state = 'lose'; endReason = text; }
+}
+
+// ---------- UPDATE STAGE 1: GEMPA ----------
+function updateQuake() {
+  const q = Q, FLOOR = 440;
+  const underTable = q.tables.find(tx => q.px + 15 > tx && q.px + 15 < tx + 120);
+
+  if (keys['ArrowDown'] && underTable !== undefined && q.phase !== 'after') q.hide = true;
+  else if (!keys['ArrowDown']) q.hide = false;
+  if (!q.hide) {
+    if (keys['ArrowLeft']) q.px -= 4;
+    if (keys['ArrowRight']) q.px += 4;
+    q.px = Math.max(10, Math.min(W - 40, q.px));
+  }
+
+  q.timer--;
+  if (q.phase === 'calm' && q.timer <= 0) {
+    q.phase = 'shake'; q.timer = 480;
+    showMsg('GEMPA! Merunduk & berlindung di bawah meja! (tahan ↓)', 200);
+  } else if (q.phase === 'shake') {
+    q.shake = 8;
+    if (q.hide) score += 1;
+    if (--q.spawn <= 0) {
+      q.spawn = 18 + Math.random() * 15;
+      const kinds = ['lampu', 'buku', 'plafon'];
+      q.objs.push({ x: Math.random() * (W - 40), y: -30, w: 30, h: 22, vy: 2 + Math.random() * 2,
+                    k: kinds[Math.random() * 3 | 0] });
+    }
+    if (q.timer <= 0) {
+      q.phase = 'after'; q.shake = 0; q.objs = [];
+      showMsg('Gempa berhenti. Keluar dengan tertib lewat PINTU di kanan → (jangan pakai lift)', 260);
+    }
+  } else if (q.phase === 'after' && q.px > W - 90) {
+    score += 200;
+    state = 'brief';
+  }
+
+  const pl = q.hide ? { x: q.px, y: FLOOR - 28, w: 30, h: 28 } : { x: q.px, y: FLOOR - 56, w: 30, h: 56 };
+  q.objs.forEach(o => {
+    o.vy += 0.25; o.y += o.vy;
+    const onTable = q.tables.some(tx => o.x + o.w > tx && o.x < tx + 120 && o.y + o.h > 375 && o.y < 390);
+    if (onTable) o.dead = true;
+    else if (rectHit(o, pl)) { o.dead = true; hurt('Aduh! Tertimpa ' + o.k + '. Segera berlindung di bawah meja!'); }
+    if (o.y > FLOOR) o.dead = true;
+  });
+  q.objs = q.objs.filter(o => !o.dead);
+}
+
+// ---------- UPDATE STAGE 2: TSUNAMI ----------
+function updateTsunami() {
+  const r = R, GROUND = 450, PX = 300;
+  if (pressed['ArrowUp'] && r.y === 0) r.vy = -15;
+  r.vy += 0.8; r.y += r.vy; if (r.y > 0) { r.y = 0; r.vy = 0; }
+
+  let sp = r.speed + (keys['ArrowRight'] ? 2 : 0) - (keys['ArrowLeft'] ? 2 : 0);
+  r.dist += sp;
+  r.wave += 0.55 + r.dist / 20000 - (sp - r.speed) * 0.25;
+  if (r.inv > 0) r.inv--;
+
+  if (r.dist < r.goal - 600) {
+    if ((r.nextObs -= sp) <= 0) {
+      const big = Math.random() < 0.35;
+      r.obs.push({ x: W + 20, w: big ? 70 : 40, h: big ? 42 : 30, k: big ? 'mobil' : 'puing' });
+      r.nextObs = 300 + Math.random() * 350;
+    }
+    if ((r.nextItem -= sp) <= 0) {
+      r.items.push({ x: W + 20, y: GROUND - 120 - Math.random() * 60, it: ITEMS[Math.random() * ITEMS.length | 0] });
+      r.nextItem = 600 + Math.random() * 500;
+    }
+  }
+  const pl = { x: PX, y: GROUND - 56 + r.y, w: 30, h: 56 };
+  r.obs.forEach(o => {
+    o.x -= sp;
+    if (r.inv === 0 && rectHit(pl, { x: o.x, y: GROUND - o.h, w: o.w, h: o.h })) {
+      r.inv = 70; r.wave += 90; hurt('Tersandung ' + o.k + '! Ombak makin dekat!');
+    }
+  });
+  r.items.forEach(i => {
+    i.x -= sp;
+    if (!i.got && rectHit(pl, { x: i.x, y: i.y, w: 28, h: 28 })) {
+      i.got = true; score += 50; r.collected++;
+      showMsg('+50 ' + i.it.n + '! Tips: ' + TIPS[Math.random() * TIPS.length | 0], 220);
+    }
+  });
+  r.obs = r.obs.filter(o => o.x > -100);
+  r.items = r.items.filter(i => i.x > -50 && !i.got);
+  score += 0.1;
+
+  if (r.wave + 200 > PX) { state = 'lose'; endReason = 'Tersapu ombak tsunami! Larilah lebih cepat & hindari rintangan.'; }
+  if (r.dist >= r.goal) { score += 300 + lives * 100; state = 'win'; }
+}
+
+// ---------- DRAW HELPERS ----------
+function person(x, y, crouch, color = '#e63946') {
+  ctx.fillStyle = '#f1c27d';
+  if (crouch) {
+    ctx.beginPath(); ctx.arc(x + 22, y - 18, 9, 0, 7); ctx.fill();
+    ctx.fillStyle = color; ctx.fillRect(x, y - 16, 26, 16);
+    ctx.fillStyle = '#f1c27d'; ctx.fillRect(x + 18, y - 30, 10, 5); // tangan di kepala
+    return;
+  }
+  ctx.beginPath(); ctx.arc(x + 15, y - 48, 9, 0, 7); ctx.fill();
+  ctx.fillStyle = color; ctx.fillRect(x + 5, y - 39, 20, 22);
+  ctx.fillStyle = '#1d3557';
+  const sw = Math.sin(t * 0.4) * 5;
+  ctx.fillRect(x + 6 + sw, y - 17, 7, 17); ctx.fillRect(x + 17 - sw, y - 17, 7, 17);
+}
+
+function text(s, x, y, size = 20, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px Segoe UI, Arial`; ctx.textAlign = align;
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText(s, x, y);
+  ctx.fillStyle = color; ctx.fillText(s, x, y);
+}
+
+function wrapText(s, x, y, maxW, lh, size, color) {
+  ctx.font = `bold ${size}px Segoe UI, Arial`;
+  const words = s.split(' '); let line = '', lines = [];
+  words.forEach(w => { const tl = line + w + ' '; if (ctx.measureText(tl).width > maxW && line) { lines.push(line); line = w + ' '; } else line = tl; });
+  lines.push(line);
+  lines.forEach((l, i) => text(l.trim(), x, y + i * lh, size, color));
+}
+
+function hud(stage) {
+  ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(0, 0, W, 40);
+  text(stage, 12, 27, 18, '#ffd166', 'left');
+  text('Skor: ' + Math.floor(score), W / 2, 27, 18);
+  text('❤'.repeat(Math.max(0, lives)), W - 12, 27, 20, '#ef476f', 'right');
+  if (msgT > 0) {
+    msgT--;
+    ctx.fillStyle = 'rgba(11,37,69,.85)'; ctx.fillRect(60, 50, W - 120, 56);
+    wrapText(msg, W / 2, 73, W - 160, 22, 17, '#fff');
+  }
+}
+
+// ---------- DRAW SCENES ----------
+function drawQuake() {
+  const q = Q;
+  ctx.save();
+  if (q.shake) ctx.translate((Math.random() - .5) * q.shake * 2, (Math.random() - .5) * q.shake);
+  // dinding & lantai kelas
+  ctx.fillStyle = '#fefae0'; ctx.fillRect(-20, -20, W + 40, 480);
+  ctx.fillStyle = '#bc6c25'; ctx.fillRect(-20, 440, W + 40, 120);
+  // papan tulis
+  ctx.fillStyle = '#2d6a4f'; ctx.fillRect(330, 130, 300, 140);
+  ctx.fillStyle = '#fff'; ctx.font = '18px Segoe UI'; ctx.textAlign = 'center';
+  ctx.fillText('Materi: Mitigasi Bencana', 480, 190); ctx.fillText('Merunduk • Berlindung • Berpegangan', 480, 220);
+  // jendela
+  ctx.fillStyle = '#90e0ef'; ctx.fillRect(60, 140, 140, 110); ctx.fillRect(760, 140, 140, 110);
+  // pintu keluar
+  ctx.fillStyle = '#6f4518'; ctx.fillRect(W - 70, 300, 60, 140);
+  ctx.fillStyle = '#2a9d8f'; ctx.fillRect(W - 80, 270, 80, 24);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Segoe UI'; ctx.fillText('KELUAR →', W - 40, 287);
+  // lampu
+  ctx.fillStyle = '#adb5bd'; [180, 480, 780].forEach(x => ctx.fillRect(x, 40, 60, 10));
+  // pemain di belakang meja jika berlindung
+  if (q.hide) person(q.px, 440, true);
+  // meja
+  q.tables.forEach(tx => {
+    ctx.fillStyle = '#8d5524'; ctx.fillRect(tx, 375, 120, 14);
+    ctx.fillRect(tx + 5, 389, 10, 51); ctx.fillRect(tx + 105, 389, 10, 51);
+  });
+  if (!q.hide) person(q.px, 440, false);
+  // benda jatuh
+  q.objs.forEach(o => {
+    ctx.fillStyle = o.k === 'lampu' ? '#ffe66d' : o.k === 'buku' ? '#457b9d' : '#ced4da';
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+  });
+  ctx.restore();
+  if (q.phase === 'shake') text('Guncangan: ' + Math.ceil(q.timer / 60) + ' dtk', W / 2, 140, 22, '#ef476f');
+  hud('Tahap 1: GEMPA BUMI');
+}
+
+function drawTsunami() {
+  const r = R, GROUND = 450, PX = 300;
+  // langit & latar
+  ctx.fillStyle = '#a8dadc'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#94a3b8';
+  for (let i = 0; i < 8; i++) {
+    const bx = ((i * 180 - r.dist * 0.3) % 1440 + 1440) % 1440 - 200;
+    ctx.fillRect(bx, 260 - (i % 3) * 40, 110, 200);
+  }
+  ctx.fillStyle = '#6c757d'; ctx.fillRect(0, GROUND, W, H - GROUND);
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < 12; i++) ctx.fillRect(((i * 100 - r.dist) % 1200 + 1200) % 1200 - 100, GROUND + 40, 50, 6);
+  // rambu jalur evakuasi
+  for (let i = 0; i < 6; i++) {
+    const sx = ((i * 520 + 200 - r.dist * 1) % 3120 + 3120) % 3120 - 200;
+    ctx.fillStyle = '#555'; ctx.fillRect(sx + 28, GROUND - 120, 6, 120);
+    ctx.fillStyle = '#f77f00'; ctx.fillRect(sx, GROUND - 150, 64, 36);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillText('EVAKUASI', sx + 32, GROUND - 135); ctx.fillText('→ →', sx + 32, GROUND - 121);
+  }
+  // bukit titik kumpul
+  const hx = W + (r.goal - r.dist) - 300;
+  if (hx < W + 100) {
+    ctx.fillStyle = '#52b788';
+    ctx.beginPath(); ctx.moveTo(hx, GROUND); ctx.quadraticCurveTo(hx + 300, 200, hx + 700, GROUND); ctx.fill();
+    ctx.fillStyle = '#2a9d8f'; ctx.fillRect(hx + 250, 230, 120, 40);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Segoe UI'; ctx.fillText('TITIK KUMPUL', hx + 310, 255);
+  }
+  // rintangan & item
+  r.obs.forEach(o => {
+    ctx.fillStyle = o.k === 'mobil' ? '#e63946' : '#7f5539';
+    ctx.fillRect(o.x, GROUND - o.h, o.w, o.h);
+    if (o.k === 'mobil') { ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(o.x + 15, GROUND, 8, 0, 7); ctx.arc(o.x + 55, GROUND, 8, 0, 7); ctx.fill(); }
+  });
+  r.items.forEach(i => {
+    ctx.fillStyle = i.it.c; ctx.fillRect(i.x, i.y + Math.sin(t * .1) * 4, 28, 28);
+    ctx.fillStyle = '#000'; ctx.font = 'bold 10px Segoe UI'; ctx.fillText(i.it.n, i.x + 14, i.y - 6);
+  });
+  // pemain
+  if (r.inv % 10 < 6) person(PX, GROUND + r.y, false);
+  // ombak tsunami
+  const wx = r.wave;
+  const g = ctx.createLinearGradient(wx, 0, wx + 200, 0);
+  g.addColorStop(0, '#023e8a'); g.addColorStop(1, '#0096c7');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.moveTo(-10, H); ctx.lineTo(-10, 200);
+  for (let y = 200; y <= H; y += 20) ctx.lineTo(wx + 200 + Math.sin(y * .05 + t * .2) * 15, y);
+  ctx.lineTo(-10, H); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.7)';
+  for (let y = 200; y < H; y += 40) { ctx.beginPath(); ctx.arc(wx + 200 + Math.sin(y * .05 + t * .2) * 15, y, 7, 0, 7); ctx.fill(); }
+  // progres
+  ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(200, H - 26, 560, 14);
+  ctx.fillStyle = '#52b788'; ctx.fillRect(200, H - 26, 560 * Math.min(1, r.dist / r.goal), 14);
+  text('Jarak ke Titik Kumpul: ' + Math.max(0, Math.ceil((r.goal - r.dist) / 10)) + ' m', W / 2, H - 32, 14);
+  hud('Tahap 2: TSUNAMI');
+}
+
+function panel(title, color, lines, footer) {
+  ctx.fillStyle = '#0b2545'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#13315c'; ctx.fillRect(60, 40, W - 120, H - 80);
+  text(title, W / 2, 100, 36, color);
+  let y = 150;
+  lines.forEach(l => { wrapText(l, W / 2, y, W - 200, 26, 18, '#fff'); y += l.length > 80 ? 56 : 32; });
+  if (Math.floor(t / 30) % 2) text(footer, W / 2, H - 70, 22, '#ffd166');
+}
+
+// ---------- LOOP ----------
+function loop() {
+  t++;
+  if (state === 'menu') {
+    panel('SIAGA BENCANA!', '#ffd166', [
+      'Kamu adalah pelajar di sekolah dekat pantai. Tiba-tiba terjadi gempa bumi kuat!',
+      'TAHAP 1 – GEMPA: Saat guncangan, pergi ke meja dan TAHAN ↓ untuk berlindung.',
+      'Setelah gempa berhenti, keluar lewat pintu di kanan.',
+      'TAHAP 2 – TSUNAMI: Lari ke Titik Kumpul di dataran tinggi! Lompat (↑) hindari puing.',
+      'Kumpulkan isi Tas Siaga untuk skor & tips dari BMKG.'
+    ], 'Tekan ENTER / klik untuk mulai');
+    if (pressed['Enter']) startQuake();
+  } else if (state === 'quake') { updateQuake(); drawQuake(); }
+  else if (state === 'brief') {
+    panel('⚠ GEMPA BERPOTENSI TSUNAMI', '#ef476f', [
+      'Gempa terjadi kuat & lama di dekat pantai. BMKG mengeluarkan Peringatan Dini Tsunami!',
+      'Jangan menunggu! Segera evakuasi ke tempat tinggi mengikuti rambu jalur evakuasi.',
+      'Jangan kembali ke pantai untuk melihat air surut atau mengambil barang.'
+    ], 'Tekan ENTER untuk evakuasi!');
+    if (pressed['Enter']) startTsunami();
+  } else if (state === 'tsunami') { updateTsunami(); drawTsunami(); }
+  else if (state === 'win' || state === 'lose') {
+    const win = state === 'win';
+    panel(win ? '🎉 KAMU SELAMAT!' : '😢 COBA LAGI', win ? '#52b788' : '#ef476f', [
+      win ? 'Hebat! Kamu berhasil sampai di Titik Kumpul dengan selamat.' : endReason,
+      'Skor akhir: ' + Math.floor(score),
+      'Ingat: ' + TIPS[(Math.floor(score) % TIPS.length)],
+      'Info gempa & peringatan dini tsunami resmi: aplikasi InfoBMKG / bmkg.go.id'
+    ], 'Tekan ENTER untuk main lagi');
+    if (pressed['Enter']) state = 'menu';
+  }
+  if (flash > 0) { ctx.fillStyle = `rgba(255,0,0,${flash / 50})`; ctx.fillRect(0, 0, W, H); flash--; }
+  pressed = {};
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
